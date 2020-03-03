@@ -1,5 +1,12 @@
 import { Injectable, Inject } from "@angular/core";
-import { tap } from "rxjs/operators";
+import {
+  tap,
+  mergeMap,
+  flatMap,
+  map,
+  switchMap,
+  catchError
+} from "rxjs/operators";
 import {
   HttpRequest,
   HttpHandler,
@@ -8,56 +15,76 @@ import {
   HttpResponse,
   HttpErrorResponse
 } from "@angular/common/http";
-import { Observable, from } from "rxjs";
+import { Observable, from, throwError, BehaviorSubject } from "rxjs";
+import { HttpClient, HttpHeaders } from "@angular/common/http";
+
 // import { environment } from "./../../environments/environment";
 
 @Injectable()
 export class AuthInterceptor implements HttpInterceptor {
   private environment;
+  private refreshEndpoint: string;
+  private token;
+  private refreshToken;
+
   constructor(
+    private http: HttpClient,
     @Inject("environment")
     environment
   ) {
     this.environment = environment;
+    this.refreshEndpoint = this.environment["refreshtoken-endpoint"];
+    this.token = localStorage.getItem("access-token");
+    this.refreshToken = localStorage.getItem("refresh-token");
   }
   //function which will be called for all http calls
   intercept(
     request: HttpRequest<any>,
     next: HttpHandler
   ): Observable<HttpEvent<any>> {
-    let tokenNameLocalstorage = this.environment["token-name-localstorage"];
-    let tokenNameHeader = this.environment["token-name-header"];
-    let token = localStorage.getItem(tokenNameLocalstorage);
-
-    //how to update the request Parameters
-    const updatedRequest = request.clone({
-      headers: request.headers.set(tokenNameHeader, token)
-    });
-    console.log("updatedRequest :", updatedRequest);
-    //const updatedRequest = request.clone();
-    //logging the updated Parameters to browser's console
-    console.log("Before making api call : ", updatedRequest);
     return next.handle(request).pipe(
-      tap(
-        event => {
-          //logging the http response to browser's console in case of a success
-          if (event instanceof HttpResponse) {
-            console.log("api call success :", event);
+      catchError(error => {
+        if (error instanceof HttpErrorResponse && error.status === 401) {
+          if (this.token) {
+            // Add token to header
+            request = request.clone({
+              headers: request.headers.set(
+                "Authorization",
+                "Bearer " + this.token
+              )
+            });
+            // Refresh Token AND Retry
+            return this.refreshTokenAndRetry(request, next);
+          } else {
+            console.warn("Token doesn't exist !", "Bearer " + this.token);
+            return next.handle(request);
           }
-        },
-        error => {
-          console.error(error);
-          if (error.status === 401) {
-            if (error.error.message == "Token is exp") {
-              //TODO: Token refreshing
-            } else {
-              //TODO:
-              //Logout from account or do some other stuff
-            }
-          }
-          return Observable.throw(error);
         }
-      )
+      })
+    );
+  }
+
+  /**
+   * refreshToken
+   * Refresh the token after expiration
+   * @param token
+   * @param request
+   * @param next
+   */
+  refreshTokenAndRetry(request: HttpRequest<any>, next: HttpHandler) {
+    return this.http.post(this.refreshEndpoint, {}).pipe(
+      switchMap((response: any) => {
+        console.log("response", response);
+        localStorage.setItem("access-token", response["access-token"]);
+        localStorage.setItem("refresh-token", response["refresh-token"]);
+        request = request.clone({
+          headers: request.headers.set(
+            "Authorization",
+            "Bearer " + response["refresh-token"]
+          )
+        });
+        return next.handle(request);
+      })
     );
   }
 }
